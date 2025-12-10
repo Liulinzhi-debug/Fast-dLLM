@@ -37,6 +37,7 @@ from generate import generate, generate_with_prefix_cache, generate_with_dual_ca
 from model.modeling_llada import LLaDAModelLM
 import json
 import time
+import argparse
 def set_seed(seed):
     torch.manual_seed(seed)
     random.seed(seed)
@@ -67,6 +68,14 @@ class LLaDAEvalHarness(LM):
         save_dir=None,
         show_speed=False,
         dual_cache=False,
+        # <--- 新增 SlowFast 参数开始 --->
+        slowfast=False,          # 是否开启 SlowFast
+        slow_steps=6,            # 前几步保守
+        slow_threshold=0.97,     # 保守阈值
+        fast_threshold=0.45,     # 激进阈值
+        converge_window=2,       # 收敛窗口
+        min_converge_var=0.01,   # 方差阈值
+        # <--- 新增结束 --->
         **kwargs,
     ):
         '''
@@ -132,6 +141,19 @@ class LLaDAEvalHarness(LM):
         self.save_dir = save_dir
         self.show_speed = show_speed
         self.dual_cache = dual_cache
+        # 新增：保存这些参数为实例属性
+        import builtins
+        slowfast_args = getattr(builtins, 'SLOWFAST_ARGS', {
+            'slowfast': False, 'slow_steps': 6, 'slow_threshold': 0.97,
+            'fast_threshold': 0.45, 'converge_window': 2, 'min_converge_var': 0.01
+        })
+        self.slowfast = slowfast_args['slowfast']
+        self.slow_steps = slowfast_args['slow_steps']
+        self.slow_threshold = slowfast_args['slow_threshold']
+        self.fast_threshold = slowfast_args['fast_threshold']
+        self.converge_window = slowfast_args['converge_window']
+        self.min_converge_var = slowfast_args['min_converge_var']
+
     @property
     def rank(self):
         return self._rank
@@ -336,10 +358,29 @@ class LLaDAEvalHarness(LM):
 
             stop_tokens = req.args[1]['until']
             input_ids = batched_input_ids
+
             if self.use_cache:
                 if self.dual_cache:
-                    generated_answer, nfe = generate_with_dual_cache(self.model, input_ids, steps=self.steps, gen_length=self.gen_length, block_length=self.block_length, 
-                                        temperature=0, remasking=self.remasking, mask_id=self.mask_id, threshold=self.threshold, factor=self.factor)
+                    # generated_answer, nfe = generate_with_dual_cache(self.model, input_ids, steps=self.steps, gen_length=self.gen_length, block_length=self.block_length, 
+                    #                     temperature=0, remasking=self.remasking, mask_id=self.mask_id, threshold=self.threshold, factor=self.factor)
+
+                    generated_answer, nfe = generate_with_dual_cache(
+                        self.model, input_ids,
+                        steps=self.steps,
+                        gen_length=self.gen_length,
+                        block_length=self.block_length,
+                        temperature=0,
+                        remasking=self.remasking,
+                        mask_id=self.mask_id,
+                        threshold=None,  # SlowFast 开启时旧 threshold 被忽略
+                        factor=self.factor,
+                        slowfast=self.slowfast,
+                        slow_steps=self.slow_steps,
+                        slow_threshold=self.slow_threshold,
+                        fast_threshold=self.fast_threshold,
+                        converge_window=self.converge_window,
+                        min_converge_var=self.min_converge_var
+                    )
                 else:
                     generated_answer, nfe = generate_with_prefix_cache(self.model, input_ids, steps=self.steps, gen_length=self.gen_length, block_length=self.block_length, 
                                         temperature=0, remasking=self.remasking, mask_id=self.mask_id, threshold=self.threshold, factor=self.factor)
@@ -393,7 +434,65 @@ class LLaDAEvalHarness(LM):
             
         return output
 
+def add_slowfast_args(parser: argparse.ArgumentParser):
+    parser.add_argument('--slowfast', type=str, default='False', help='Enable SlowFast dynamic threshold (True/False)')
+    parser.add_argument('--slow_steps', type=int, default=6, help='Number of slow steps at the beginning')
+    parser.add_argument('--slow_threshold', type=float, default=0.97, help='Confidence threshold for slow phase')
+    parser.add_argument('--fast_threshold', type=float, default=0.45, help='Confidence threshold for fast phase')
+    parser.add_argument('--converge_window', type=int, default=2, help='Convergence check window size')
+    parser.add_argument('--min_converge_var', type=float, default=0.01, help='Minimum variance to consider converged')
+
+# lm-eval-harness 的 cli_evaluate 会自动处理 parser
+# 我们通过 monkey-patch 的方式注入参数（最简单兼容方式）
+# 删除 add_slowfast_args 函数（不再需要）
+
+original_cli = cli_evaluate
+
+def patched_cli_evaluate():
+    import sys
+    # 手动解析并移除自定义参数
+    known_args = ['--slowfast', '--slow_steps', '--slow_threshold', '--fast_threshold', '--converge_window', '--min_converge_var']
+    custom_args = {}
+    i = 0
+    while i < len(sys.argv):
+        if sys.argv[i] in known_args:
+            if i + 1 < len(sys.argv):
+                arg, value = sys.argv[i], sys.argv[i + 1]
+                key = arg[2:]
+                if arg == '--slowfast':
+                    custom_args['slowfast'] = value.lower() == 'true'
+                else:
+                    type_map = {
+                        'slow_steps': int, 'converge_window': int,
+                        'slow_threshold': float, 'fast_threshold': float, 'min_converge_var': float
+                    }
+                    custom_args[key] = type_map[key](value)
+                sys.argv.pop(i)
+                sys.argv.pop(i)
+            else:
+                i += 1
+        else:
+            i += 1
+
+    # 注入全局
+    import builtins
+    if not hasattr(builtins, 'SLOWFAST_ARGS'):
+        builtins.SLOWFAST_ARGS = {
+            'slowfast': False,
+            'slow_steps': 6,
+            'slow_threshold': 0.97,
+            'fast_threshold': 0.45,
+            'converge_window': 2,
+            'min_converge_var': 0.01
+        }
+    builtins.SLOWFAST_ARGS.update(custom_args)
+
+    # 最后执行原始 lm-eval 解析
+    original_cli()
+
+
 
 if __name__ == "__main__":
-    cli_evaluate()
+    # cli_evaluate()
+    patched_cli_evaluate()
     

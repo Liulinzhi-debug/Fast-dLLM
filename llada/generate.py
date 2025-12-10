@@ -210,7 +210,13 @@ def generate_with_prefix_cache(model, prompt, steps=128, gen_length=128, block_l
 @torch.no_grad()
 def generate_with_dual_cache(
     model, prompt, steps=128, gen_length=128, block_length=128, temperature=0.,
-    remasking="low_confidence", mask_id=126336, threshold=None, factor=None
+    remasking="low_confidence", mask_id=126336, threshold=None, factor=None,
+    slowfast=True,          # <--- 新增：开启 SlowFast
+    slow_steps=5,           # <--- 前 slow_steps 步用保守阈值（可调 3–8）
+    slow_threshold=0.97,    # <--- 保守阶段阈值
+    fast_threshold=0.45,    # <--- 激进阶段阈值
+    converge_window=2,      # <--- 收敛判断窗口（三金原则）
+    min_converge_var=0.01   # <--- 方差阈值，越小越稳定
 ):
     B = prompt.shape[0]
     Lp = int(prompt.shape[1])  # Python int, not Tensor
@@ -225,7 +231,9 @@ def generate_with_dual_cache(
     x[:, :Lp] = prompt
 
     nfe = 0
-
+###    
+    recent_avg_conf = []  # 记录每步的平均置信度，用于收敛判断
+###
     for nb in range(num_blocks):
         s = Lp + nb * block_length
         e = s + block_length
@@ -247,22 +255,39 @@ def generate_with_dual_cache(
         global_mask_index = (x == mask_id)
         # Do not touch beyond current block in this phase
         global_mask_index[:, e:] = False
-
+###
+        # 计算当前阈值（Step 0 视为 i=0）
+        if slowfast and nb == 0 and 0 < slow_steps:
+            curr_thresh = slow_threshold
+        else:
+            curr_thresh = fast_threshold
         if factor is None:
-            quota0 = None if threshold is not None else num_transfer_tokens[:, 0]  # (B,)
             x0, transfer_index = get_transfer_index(
-                out_full.logits, temperature, remasking, global_mask_index, x, quota0, threshold
+                out_full.logits, temperature, remasking, global_mask_index, x,
+                None, threshold=curr_thresh  # 使用动态阈值
             )
         else:
             x0, transfer_index = get_transfer_index_dynamic(
                 out_full.logits, temperature, remasking, global_mask_index, x, None, factor
             )
+###
+        # if factor is None:
+        #     quota0 = None if threshold is not None else num_transfer_tokens[:, 0]  # (B,)
+        #     x0, transfer_index = get_transfer_index(
+        #         out_full.logits, temperature, remasking, global_mask_index, x, quota0, threshold
+        #     )
+        # else:
+        #     x0, transfer_index = get_transfer_index_dynamic(
+        #         out_full.logits, temperature, remasking, global_mask_index, x, None, factor
+        #     )
 
         # In-place update via torch.where (no tensor-slice assignment with mask)
         x = torch.where(transfer_index, x0, x)
 
-        # 2) Semi-autoregressive refinement, fixed number of steps (graph-friendly)
-        #    Each iteration runs on the current block with KV-cache and replace_position
+###        
+        # Refinement loop
+        recent_avg_conf = []  # 每个 block 重置收敛记录
+###
         for i in range(1, steps_per_block):
             # Evaluate logits only for current block with cache
             if (x[:, s:e] == mask_id).sum() == 0:
@@ -274,21 +299,55 @@ def generate_with_dual_cache(
             # Mask and quota for this step (all tensor ops)
             mask_blk = (x[:, s:e] == mask_id)  # (B, block_length)
 
+            # if factor is None:
+            #     quota_i = None if threshold is not None else num_transfer_tokens[:, i]  # (B,)
+            #     x0_blk, transfer_idx_blk = get_transfer_index(
+            #         logits_blk, temperature, remasking, mask_blk, x[:, s:e], quota_i, threshold
+            #     )
+            # else:
+            #     x0_blk, transfer_idx_blk = get_transfer_index_dynamic(
+            #         logits_blk, temperature, remasking, mask_blk, x[:, s:e], None, factor
+            #     )
+###
+            # === SlowFast 动态阈值计算 ===
+            if slowfast and nb == 0 and i < slow_steps:
+                curr_thresh = slow_threshold
+            else:
+                # 检查收敛性（三金原则之收敛原则）
+                if len(recent_avg_conf) >= converge_window:
+                    recent_vars = np.var(recent_avg_conf[-converge_window:])
+                    if recent_vars < min_converge_var:
+                        curr_thresh = fast_threshold
+                    else:
+                        curr_thresh = slow_threshold  # 未收敛，继续保守
+                else:
+                    curr_thresh = fast_threshold  # 默认激进
+
+            # === 结束动态阈值 ===
+
             if factor is None:
-                quota_i = None if threshold is not None else num_transfer_tokens[:, i]  # (B,)
                 x0_blk, transfer_idx_blk = get_transfer_index(
-                    logits_blk, temperature, remasking, mask_blk, x[:, s:e], quota_i, threshold
+                    logits_blk, temperature, remasking, mask_blk, x[:, s:e],
+                    None, threshold=curr_thresh  # 关键：使用 curr_thresh
                 )
             else:
                 x0_blk, transfer_idx_blk = get_transfer_index_dynamic(
                     logits_blk, temperature, remasking, mask_blk, x[:, s:e], None, factor
                 )
-
+###                
             # Merge back into x[:, s:e] using torch.where (no masked slice assignment)
             blk_old = x[:, s:e]
             blk_new = torch.where(transfer_idx_blk, x0_blk, blk_old)
             x = torch.cat([x[:, :s], blk_new, x[:, e:]], dim=1)  # static concatenation
 
+###
+            # 记录本步平均置信度（用于收敛判断）
+            with torch.no_grad():
+                p = F.softmax(logits_blk.to(torch.float64), dim=-1)
+                chosen_p = torch.gather(p, dim=-1, index=x0_blk.unsqueeze(-1)).squeeze(-1)
+                avg_conf = chosen_p[mask_blk].mean().item() if mask_blk.any() else 1.0
+                recent_avg_conf.append(avg_conf)
+###
             nfe += 1
 
     return x, nfe
