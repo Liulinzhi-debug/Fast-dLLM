@@ -218,6 +218,7 @@ def generate_with_dual_cache(
     converge_window=2,      # <--- 收敛判断窗口（三金原则）
     min_converge_var=0.01   # <--- 方差阈值，越小越稳定
 ):
+    print(f"[SLOWFAST PARAMS] slowfast={slowfast}, slow_steps={slow_steps}, slow_threshold={slow_threshold}, fast_threshold={fast_threshold}")
     B = prompt.shape[0]
     Lp = int(prompt.shape[1])  # Python int, not Tensor
     assert gen_length % block_length == 0
@@ -312,17 +313,22 @@ def generate_with_dual_cache(
             # === SlowFast 动态阈值计算 ===
             if slowfast and nb == 0 and i < slow_steps:
                 curr_thresh = slow_threshold
+                # if i == 1:  # 只打印一次
+                #     print(f"[SlowFast DEBUG] Step {i}: Using SLOW threshold = {curr_thresh}")
             else:
                 # 检查收敛性（三金原则之收敛原则）
                 if len(recent_avg_conf) >= converge_window:
                     recent_vars = np.var(recent_avg_conf[-converge_window:])
                     if recent_vars < min_converge_var:
                         curr_thresh = fast_threshold
+                        # if i == slow_steps:  # 切换时打印
+                        #     print(f"[SlowFast DEBUG] Step {i}: CONVERGED! Switching to FAST threshold = {curr_thresh}")
                     else:
                         curr_thresh = slow_threshold  # 未收敛，继续保守
                 else:
                     curr_thresh = fast_threshold  # 默认激进
-
+                    # if i == slow_steps and nb == 0:
+                    #     print(f"[SlowFast DEBUG] Step {i}: Default to FAST threshold = {curr_thresh}")
             # === 结束动态阈值 ===
 
             if factor is None:

@@ -1,0 +1,73 @@
+========== Baseline vs SlowFast 全量 GSM8K 对比（2025年 12月 11日 星期四 20:21:49 CST） ==========
+任务: gsm8k, fewshot: 5, gen_length: 256, block_length: 32
+
+==========================================
+Running SlowFast Combo 1: 4,0.97,0.6,3,0.02 (2 轮，全量)
+==========================================
+>>> SlowFast Combo 1 Run 1/2 开始
+>>> SlowFast Combo 1 Run 1/2 完成
+=== SlowFast Combo 1 Run 1/2 结果摘要 ===
+Tokens per second: 53.658912658691406
+Total NFE is 15657
+Tokens per second: 53.02547836303711
+Total NFE is 15756
+Tokens per second: 52.924415588378906
+Total NFE is 16093
+Tokens per second: 52.59901428222656
+Total NFE is 16104
+|Tasks|Version|     Filter     |n-shot|  Metric   |   |Value |   |Stderr|
+|gsm8k|      3|flexible-extract|     5|exact_match|↑  |0.7096|±  |0.0125|
+|     |       |strict-match    |     5|exact_match|↑  |0.3252|±  |0.0129|
+
+>>> SlowFast Combo 1 Run 2/2 开始
+>>> SlowFast Combo 1 Run 2/2 完成
+=== SlowFast Combo 1 Run 2/2 结果摘要 ===
+Tokens per second: 53.03835678100586
+Total NFE is 15756
+Tokens per second: 53.28910827636719
+Total NFE is 15657
+Tokens per second: 52.74414825439453
+Total NFE is 16104
+Tokens per second: 52.88477325439453
+Total NFE is 16093
+|Tasks|Version|     Filter     |n-shot|  Metric   |   |Value |   |Stderr|
+|gsm8k|      3|flexible-extract|     5|exact_match|↑  |0.7096|±  |0.0125|
+|     |       |strict-match    |     5|exact_match|↑  |0.3252|±  |0.0129|
+
+==========================================
+Running SlowFast Combo 2: 4,0.99,0.7,3,0.06 (2 轮，全量) - 推荐
+==========================================
+>>> SlowFast Combo 2 Run 1/2 开始
+>>> SlowFast Combo 2 Run 1/2 完成
+=== SlowFast Combo 2 Run 1/2 结果摘要 ===
+Tokens per second: 49.180084228515625
+Total NFE is 18214
+Tokens per second: 48.408897399902344
+Total NFE is 18422
+Tokens per second: 48.43095397949219
+Total NFE is 18628
+Tokens per second: 48.27665328979492
+Total NFE is 18737
+|Tasks|Version|     Filter     |n-shot|  Metric   |   |Value |   |Stderr|
+|gsm8k|      3|flexible-extract|     5|exact_match|↑  |0.7544|±  |0.0119|
+|     |       |strict-match    |     5|exact_match|↑  |0.3768|±  |0.0133|
+
+>>> SlowFast Combo 2 Run 2/2 开始
+>>> SlowFast Combo 2 Run 2/2 完成
+=== SlowFast Combo 2 Run 2/2 结果摘要 ===
+Tokens per second: 48.89128112792969
+Total NFE is 18214
+Tokens per second: 48.42875289916992
+Total NFE is 18422
+Tokens per second: 48.28470993041992
+Total NFE is 18737
+Tokens per second: 48.1859130859375
+Total NFE is 18628
+|Tasks|Version|     Filter     |n-shot|  Metric   |   |Value |   |Stderr|
+|gsm8k|      3|flexible-extract|     5|exact_match|↑  |0.7544|±  |0.0119|
+|     |       |strict-match    |     5|exact_match|↑  |0.3768|±  |0.0133|
+
+==========================================
+所有对比全部完成！
+完整结果见 final_full_comparison.log 和 logs/ 目录
+==========================================
